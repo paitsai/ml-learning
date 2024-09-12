@@ -1,5 +1,6 @@
 import os
 from PIL import Image
+from tqdm import tqdm  # 导入 tqdm 库
 
 # 设置目标尺寸
 target_size = (512, 512)
@@ -8,7 +9,8 @@ target_size = (512, 512)
 current_directory = os.getcwd()
 jpg_files = [f for f in os.listdir(current_directory) if f.endswith('.jpg')]
 
-for jpg_file in jpg_files:
+# 在处理文件时显示进度条
+for jpg_file in tqdm(jpg_files, desc="处理图像", unit="文件"):
     # 打开图像
     img_path = os.path.join(current_directory, jpg_file)
     with Image.open(img_path) as img:
