@@ -4,8 +4,8 @@ from torch import optim
 from torch.autograd import Variable
 import torchvision
 import torch.nn as nn
-import matplotlib.pyplot as plt
 import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -73,9 +73,8 @@ class D(nn.Module):
         z=z.view(-1)
         return z
 
-
 # 开始训练！
-
+import os
 
 batch_size=32
 feature_dim=128 #设置特征向量的大小
@@ -92,9 +91,8 @@ D_model = D(3).cuda()
 G_model.train()
 D_model.train()
 
-
-criterion=nn.BCELoss()
-
+# criterion=nn.BCELoss()
+criterion = nn.BCEWithLogitsLoss()
 # optimizer
 opt_D = torch.optim.Adam(D_model.parameters(), lr=lr, betas=(0.5, 0.999))
 opt_G = torch.optim.Adam(G_model.parameters(), lr=lr, betas=(0.5, 0.999))
@@ -112,7 +110,6 @@ def same_seeds(seed):
     torch.backends.cudnn.deterministic = True
 
 same_seeds(0)
-
 
 from torch.utils.data import Dataset, DataLoader
 import glob
@@ -156,24 +153,22 @@ def get_dataset(root):
 dataset = get_dataset(os.path.join(workspace_dir, 'raw_GAN'))
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
-
-images = []
-# 测试模型运行
-# 获取数据集切片并转换为 Tensor
-for i in range(10, 20):
-    img_tensor = dataset[i]  # 获取单张图像 Tensor
-    images.append(img_tensor)
-
+import matplotlib.pyplot as plt
 
 
 # 到这里所有的测试工作就已经全部完成了
+
 # 正式开始训练
 
 for e,epoch in enumerate(range(n_epoch)):
     for i,data in enumerate(dataloader):
 
         # 第一阶段训练 识别器模型
-        img_batch=data.cuda()
+        img_batch=data
+        # print(f"data type={type(data)}")
+        # print(img_batch.size())
+        img_batch=img_batch.to("cuda")
+        
         bsize=img_batch.size(0)
         z_test=Variable(torch.randn(bsize,feature_dim)).cuda()
         generated_imgs=G_model(z_test)
@@ -196,10 +191,12 @@ for e,epoch in enumerate(range(n_epoch)):
 
         # 第二阶段训练生成器模型
 
-        z_test=Variable(torch.randn(bsize,feature_dim)).cuda()
-        generated_imgs=G(z_test)
-        generated_predict=D_model(generated_imgs)
-        Gloss=criterion(generated_labels,initial_labels)
+        z_test2=Variable(torch.randn(bsize,feature_dim)).cuda()
+        
+        generated_imgs2=G_model(z_test2)
+        generated_predict=D_model(generated_imgs2)
+   
+        Gloss=criterion(generated_predict,initial_labels)
 
         G_model.zero_grad()
         Gloss.backward()
