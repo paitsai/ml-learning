@@ -1,86 +1,181 @@
-
+# 导入依赖
 import torch
 from torch import optim
 from torch.autograd import Variable
 import torchvision
 import torch.nn as nn
 import os
+
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+
+# 定义初始化方法
 
 def weights_init(m):
     classname = m.__class__.__name__
-    if classname.find('Conv') != -1:#find() 返回字符串第一次出现的索引，如果没有匹配项则返回-1
-        m.weight.data.normal_(0.0, 0.02)#归一化
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.02)
+    if classname.find('Conv') != -1:  # 对卷积层进行 He 初始化
+        nn.init.kaiming_normal_(m.weight.data, mode='fan_out', nonlinearity='relu')
+    elif classname.find('BatchNorm') != -1:  # 对 BatchNorm 层
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
         m.bias.data.fill_(0)
+    elif classname.find('Linear') != -1:  # 对全连接层
+        nn.init.kaiming_normal_(m.weight.data, mode='fan_out', nonlinearity='relu')
 
-class G(nn.Module):
-    def __init__(self,in_dims=1024,out_dim=512):
-        # in_dims指的是输出的随机向量的维度 ; out_dims指的是输出图像的尺寸
-        super(G,self).__init__()
-        self.model=nn.Sequential()
 
-        self.fn1=nn.Sequential(nn.Linear(in_dims,out_dim*64*64*4),
-                               nn.BatchNorm1d(out_dim*64*64*4),
-                               nn.ReLU()) #经过第一层线性层之后记得reshape为64*64*1024的形状
-        
-        self.arcconv1=nn.ConvTranspose2d(in_channels=2048,out_channels=1024,kernel_size=3,stride=1,padding=1,output_padding=0)
-        self.rl1=nn.ReLU()
-        self.arcconv2=nn.ConvTranspose2d(in_channels=1024,out_channels=256,kernel_size=3,stride=2,padding=1,output_padding=1)
-        self.rl2=nn.ReLU()
-        self.arcconv3=nn.ConvTranspose2d(in_channels=256,out_channels=64,kernel_size=3,stride=2,padding=1,output_padding=1)
-        self.rl3=nn.ReLU()
-        self.arcconv4=nn.ConvTranspose2d(in_channels=64,out_channels=3,kernel_size=3,stride=2,padding=1,output_padding=1)
-        self.rl4=nn.Tanh()
+class ResBlock(nn.Module):
+    # 图片的尺度不变，只是改变了通道数量
+    def __init__(self, in_channels, out_channels):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.LeakyReLU(0.22,inplace=True)
+        self.conv2 = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
 
-        self.fn2=nn.Sequential(self.arcconv1,self.rl1,self.arcconv2,self.rl2,self.arcconv3,self.rl3,self.arcconv4,self.rl4)
-
+        # 如果输入和输出通道不同，使用 1x1 卷积调整维度
+        if in_channels != out_channels:
+            self.shortcut = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=1)
+        else:
+            self.shortcut = None
+            
         self.apply(weights_init)
-        
 
-    def forward(self,x):
-        z=self.fn1(x)
-        z=z.view(-1,2048,64,64)
-        z=self.fn2(z)
-        return z
+    def forward(self, x):
+        identity = x  # 保存输入以进行跳跃连接
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.shortcut is not None:
+            identity = self.shortcut(x)
+
+        out += identity  # 加入跳跃连接
+        out = self.relu(out)
+        return out
     
-class D(nn.Module):
-    def __init__(self,in_dims=3,dims=64):
-        # 输入的数据格式应该是  N*3*512*512
-        super(D, self).__init__()
-        
+class G(nn.Module):
+    def __init__(self, in_dims=1024, out_dim=512):
+        super(G, self).__init__()
         self.model = nn.Sequential()
 
-        def conv_binary_2d(in_dim,out_dim):
-            return nn.Sequential(
-                nn.Conv2d(in_dim,out_dim,5,2,2),
-                nn.BatchNorm2d(out_dim),nn.LeakyReLU(0.15)
-            )
-        self.model.append(nn.Conv2d(in_dims, dims, 10, 8, 1))
-        self.model.append(nn.LeakyReLU(0.1))
-        self.model.append(conv_binary_2d(dims,2*dims))
-        self.model.append(conv_binary_2d(2*dims,4*dims))
-        self.model.append(conv_binary_2d(4*dims,8*dims))
-        self.model.append(conv_binary_2d(8*dims,16*dims))
-        self.model.append(nn.Conv2d(16*dims,1,4))
-        self.model.append(nn.Sigmoid())
+        self.fn1 = nn.Sequential(
+            nn.Linear(in_dims, out_dim * 128),
+            nn.BatchNorm1d(out_dim * 8 * 16),
+            nn.ReLU()
+        )
+
+        # 第一层线性后 reshape
+        self.initial_conv = nn.ConvTranspose2d(in_channels=512*8, out_channels=256*4, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.BatchNorm2d1=nn.BatchNorm2d(1024)
+        self.second_conv = nn.ConvTranspose2d(256*4, 128, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.BatchNorm2d2=nn.BatchNorm2d(128)
+        self.resblock1 = ResBlock(128, 64)
+        self.third_conv = nn.ConvTranspose2d(64, 48, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.BatchNorm2d3=nn.BatchNorm2d(48)
+        self.resblock2 = ResBlock(48, 8)        
+        self.final_conv = nn.ConvTranspose2d(8, 3, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.tanh = nn.Tanh()
         self.apply(weights_init)
+
+    def forward(self, x):
+        z = self.fn1(x)
+        z = z.view(-1, 512*8, 4, 4)
+        z = self.initial_conv(z)
+        z=self.BatchNorm2d1(z)
+        z=self.second_conv(z)
+        z=self.BatchNorm2d2(z)
+
+        # 通过残差块
+        z = self.resblock1(z)
+        z=self.third_conv(z)
+        z=self.BatchNorm2d3(z)
+        
+        z = self.resblock2(z)
+
+        z = self.final_conv(z)
+        return self.tanh(z)
     
-    def forward(self,x):
-        # 返回是一个batch-size的一维数组
-        z=self.model(x)
-        z=z.view(-1)
+class ResBlock2(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResBlock2, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.LeakyReLU(0.2,inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # 如果输入和输出通道不同，使用 1x1 卷积调整维度
+        if in_channels != out_channels:
+            self.shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        else:
+            self.shortcut = None
+        self.apply(weights_init)
+
+    def forward(self, x):
+        identity = x  # 保存输入以进行跳跃连接
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.shortcut is not None:
+            identity = self.shortcut(x)
+
+        out += identity  # 加入跳跃连接
+        out = self.relu(out)
+        return out
+
+class D(nn.Module):
+    def __init__(self, in_dims=3, dims=64):
+        super(D, self).__init__()
+
+        self.model = nn.Sequential()
+
+        def conv_binary_2d(in_dim, out_dim):
+            return nn.Sequential(
+                nn.Conv2d(in_dim, out_dim, kernel_size=3, stride=2, padding=1),
+                nn.BatchNorm2d(out_dim),
+                nn.LeakyReLU(0.15)
+            )
+        
+        # 初始卷积层
+        # self.model.append(nn.Conv2d(in_dims, dims, kernel_size=10, stride=8, padding=1))
+        self.model.append(nn.Conv2d(in_dims, dims, kernel_size=3, stride=2, padding=1))  # 第一个卷积
+        nn.BatchNorm2d(dims),
+        self.model.append(nn.LeakyReLU(0.12))
+        
+      
+        self.model.append(conv_binary_2d(dims, 2 * dims))
+        nn.BatchNorm2d(2*dims)
+        self.model.append(ResBlock2(2 * dims, 4 * dims))  # 添加残差块
+        self.model.append(conv_binary_2d(4 * dims, 4 * dims))
+        nn.BatchNorm2d(4*dims)
+        self.model.append(ResBlock2(4 * dims, 2 * dims))  # 添加残差块
+        self.model.append(conv_binary_2d(2 * dims, 1 * dims))
+        nn.BatchNorm2d(1*dims)
+        nn.LeakyReLU(0.2,inplace=True)
+        # 输出层
+        self.model.append(nn.Conv2d(1 * dims, 1, kernel_size=4))
+        
+        self.sigm=nn.Sigmoid()
+        self.apply(weights_init)
+
+    def forward(self, x):
+        z = self.model(x)
+        z = z.view(-1)
+        z=self.sigm(z)
+        
         return z
-
-# 开始训练！
-import os
-
-batch_size=32
+    
+    
+# 模型参数设置
+batch_size=512
 feature_dim=128 #设置特征向量的大小
 
-lr=5e-5
-n_epoch=100
+lr=0.0002
+n_epoch=500
 
 workspace_dir = '.'
 save_dir=os.path.join(workspace_dir,'logs')
@@ -91,12 +186,14 @@ D_model = D(3).cuda()
 G_model.train()
 D_model.train()
 
-# criterion=nn.BCELoss()
-criterion = nn.BCEWithLogitsLoss()
-# optimizer
+
+criterion=nn.BCELoss().to('cuda')
 opt_D = torch.optim.Adam(D_model.parameters(), lr=lr, betas=(0.5, 0.999))
 opt_G = torch.optim.Adam(G_model.parameters(), lr=lr, betas=(0.5, 0.999))
 
+
+
+# 数据准备
 import random
 import numpy as np
 def same_seeds(seed):
@@ -129,7 +226,7 @@ class GAN_dataset(Dataset):
         """
         
         self.image_dir = image_dir
-        self.image_filenames = [f for f in os.listdir(image_dir) if f.endswith('.jpg')]
+        self.image_filenames = [f for f in os.listdir(image_dir) if f.endswith('.png')]
         self.transform = transform
 
     def __len__(self):
@@ -145,82 +242,76 @@ class GAN_dataset(Dataset):
         return image
 
 #这里可以加载自己想加载的数据
+from torchvision import transforms
+
 def get_dataset(root):
-    t = transforms.ToTensor()
+    # 定义转换，包括调整大小和转换为张量
+    t = transforms.Compose([
+    transforms.Resize((64,64)),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # Changing the pixel values in between -1 to 1 
+])
     dataset = GAN_dataset(root, transform=t)
     return dataset
 
 dataset = get_dataset(os.path.join(workspace_dir, 'raw_GAN'))
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
-import matplotlib.pyplot as plt
 
 
-# 到这里所有的测试工作就已经全部完成了
 
-# 正式开始训练
 
-for e,epoch in enumerate(range(n_epoch)):
-    for i,data in enumerate(dataloader):
+device='cuda'
 
-        # 第一阶段训练 识别器模型
-        img_batch=data
-        # print(f"data type={type(data)}")
-        # print(img_batch.size())
-        img_batch=img_batch.to("cuda")
+for epoch in range(n_epoch):
+    for i,real_imgs in enumerate(dataloader):
+        batch_size = real_imgs.size(0)
+        real_imgs = real_imgs.to(device)
         
-        bsize=img_batch.size(0)
-        z_test=Variable(torch.randn(bsize,feature_dim)).cuda()
-        generated_imgs=G_model(z_test)
-        initial_imgs=Variable(img_batch).cuda()
+        z = torch.randn(batch_size, feature_dim).to(device)
+        fake_images = G_model(z)
 
-        generated_labels=torch.zeros(bsize).cuda()
-        initial_labels=torch.ones(bsize).cuda()
+        # Ground truths
+        real_labels = torch.ones(batch_size).to(device)
+        fake_labels = torch.zeros(batch_size).to(device)
 
-        generated_predict=D_model(generated_imgs)
-        initial_predict=D_model(initial_imgs)
-
-        generated_loss=criterion(generated_labels,generated_predict)
-        initial_loss=criterion(initial_labels,initial_predict)
-
-        Dloss=(generated_loss+initial_loss)/2
-
-        D_model.zero_grad()
-        Dloss.backward()
+        opt_D.zero_grad()
+        real_loss=criterion(torch.squeeze(D_model(real_imgs)),real_labels)
+        fake_loss=criterion(torch.squeeze(D_model(fake_images.detach())),fake_labels)
+        d_loss = (real_loss + fake_loss) / 2
+        d_loss.backward()
         opt_D.step()
-
-        # 第二阶段训练生成器模型
-
-        z_test2=Variable(torch.randn(bsize,feature_dim)).cuda()
         
-        generated_imgs2=G_model(z_test2)
-        generated_predict=D_model(generated_imgs2)
-   
-        Gloss=criterion(generated_predict,initial_labels)
-
-        G_model.zero_grad()
-        Gloss.backward()
+        #####################
+        z = torch.randn(batch_size, feature_dim).to(device)
+        fake_images = G_model(z)
+        opt_G.zero_grad()
+        g_loss=criterion(torch.squeeze(D_model(fake_images)),real_labels)
+        g_loss.backward()
         opt_G.step()
+        
+        
+        
+        print(f"Epoch [{epoch+1}/{n_epoch}] D_loss: {d_loss.item():.4f} G_loss: {g_loss.item():.4f}")
+        if (epoch + 1) % 2 == 0:
+            with torch.no_grad():
+                z = torch.randn(16, feature_dim).to(device)
+                fake_images = G_model(z).cpu()
+                fake_images = (fake_images + 1) / 2  # Denormalize
+                
+                fig, axs = plt.subplots(4, 4, figsize=(10, 10))
+                for i in range(4):
+                    for j in range(4):
+                        axs[i, j].imshow(fake_images[i*4 + j].permute(1, 2, 0))
+                        axs[i, j].axis('off')
+                plt.tight_layout()
+                plt.savefig(f'./logs/GAN_epoch_{epoch+1}.png')
+                plt.close()
+            if (epoch+1)%10==0:
+                torch.save(G_model.state_dict(), 'generator.pth')
+                torch.save(D_model.state_dict(), 'discriminator.pth')
 
-        print(f"epoch :{epoch+1}/{n_epoch},D_model_loss:{Dloss},G_model_loss:{Gloss}",end="\n")
-
-# 训练完了
-
-G_model.eval()
-final_generated_imgs=(G_model(z_test)+1)/2
-filename = os.path.join(save_dir, f'Epoch_{epoch+1:03d}.jpg')
-torchvision.utils.save_image(final_generated_imgs, filename, nrow=10)
-print(f' | Save some samples to {filename}.')
-
-   # show generated image图片的可视化
-grid_img = torchvision.utils.make_grid(final_generated_imgs.cpu(), nrow=10)
-plt.figure(figsize=(10,10))
-plt.imshow(grid_img.permute(1, 2, 0))
-plt.show()
-G.train()
-if (e+1) % 5 == 0:
-    torch.save(G_model.state_dict(), os.path.join(workspace_dir, f'G_model.pth'))
-    torch.save(D_model.state_dict(), os.path.join(workspace_dir, f'D_model.pth'))
-
-
-       
+# Save the trained model
+torch.save(G_model.state_dict(), 'generator.pth')
+torch.save(D_model.state_dict(), 'discriminator.pth')
+        
