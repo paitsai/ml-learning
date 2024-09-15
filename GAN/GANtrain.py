@@ -5,6 +5,9 @@ from torch.autograd import Variable
 import torchvision
 import torch.nn as nn
 import os
+import matplotlib.pyplot as plt
+
+
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
@@ -60,17 +63,16 @@ class G(nn.Module):
         self.model = nn.Sequential()
 
         self.fn1 = nn.Sequential(
-            nn.Linear(in_dims, out_dim * 128),
-            nn.BatchNorm1d(out_dim * 8 * 16),
+            nn.Linear(in_dims, out_dim * 32),
+            nn.BatchNorm1d(out_dim * 32),
             nn.ReLU()
         )
 
         # 第一层线性后 reshape
-        self.initial_conv = nn.ConvTranspose2d(in_channels=512*8, out_channels=256*4, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.BatchNorm2d1=nn.BatchNorm2d(1024)
-        self.second_conv = nn.ConvTranspose2d(256*4, 128, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.BatchNorm2d2=nn.BatchNorm2d(128)
-        self.resblock1 = ResBlock(128, 64)
+        self.initial_conv = nn.ConvTranspose2d(in_channels=512*2, out_channels=256*2, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.BatchNorm2d1=nn.BatchNorm2d(512)
+        self.second_conv = nn.ConvTranspose2d(256*2, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.BatchNorm2d2=nn.BatchNorm2d(64)
         self.third_conv = nn.ConvTranspose2d(64, 48, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.BatchNorm2d3=nn.BatchNorm2d(48)
         self.resblock2 = ResBlock(48, 8)        
@@ -80,14 +82,14 @@ class G(nn.Module):
 
     def forward(self, x):
         z = self.fn1(x)
-        z = z.view(-1, 512*8, 4, 4)
+        z = z.view(-1, 512*2, 4, 4)
         z = self.initial_conv(z)
         z=self.BatchNorm2d1(z)
         z=self.second_conv(z)
         z=self.BatchNorm2d2(z)
 
         # 通过残差块
-        z = self.resblock1(z)
+        # z = self.resblock1(z)
         z=self.third_conv(z)
         z=self.BatchNorm2d3(z)
         
@@ -128,7 +130,7 @@ class ResBlock2(nn.Module):
         return out
 
 class D(nn.Module):
-    def __init__(self, in_dims=3, dims=64):
+    def __init__(self, in_dims=3, dims=32):
         super(D, self).__init__()
 
         self.model = nn.Sequential()
@@ -175,7 +177,7 @@ batch_size=512
 feature_dim=128 #设置特征向量的大小
 
 lr=0.0002
-n_epoch=500
+n_epoch=100
 
 workspace_dir = '.'
 save_dir=os.path.join(workspace_dir,'logs')
@@ -259,22 +261,40 @@ dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_worker
 
 
 
+if os.path.exists('generator.pth') and os.path.exists('discriminator.pth'):
+    # Load the models
+    G_model.load_state_dict(torch.load('generator.pth'))
+    D_model.load_state_dict(torch.load('discriminator.pth'))
+    print("Models loaded successfully.")
+else:
+    print("No saved models found. Starting training from scratch.")
+
 
 
 device='cuda'
+
+step_ratio=2
 
 for epoch in range(n_epoch):
     for i,real_imgs in enumerate(dataloader):
         batch_size = real_imgs.size(0)
         real_imgs = real_imgs.to(device)
-        
-        z = torch.randn(batch_size, feature_dim).to(device)
-        fake_images = G_model(z)
+        real_labels = torch.ones(batch_size).to(device)-0.1
+        fake_labels = torch.zeros(batch_size).to(device)+0.1
+        for i in range(step_ratio):
+            
+            z = torch.randn(batch_size, feature_dim).to(device)
+            fake_images = G_model(z)
+            opt_G.zero_grad()
+            g_loss=criterion(torch.squeeze(D_model(fake_images)),real_labels)
+            g_loss.backward()
+            opt_G.step()
 
         # Ground truths
-        real_labels = torch.ones(batch_size).to(device)
-        fake_labels = torch.zeros(batch_size).to(device)
-
+        z = torch.randn(batch_size, feature_dim).to(device)
+        fake_images = G_model(z)
+            
+            
         opt_D.zero_grad()
         real_loss=criterion(torch.squeeze(D_model(real_imgs)),real_labels)
         fake_loss=criterion(torch.squeeze(D_model(fake_images.detach())),fake_labels)
@@ -282,15 +302,7 @@ for epoch in range(n_epoch):
         d_loss.backward()
         opt_D.step()
         
-        #####################
-        z = torch.randn(batch_size, feature_dim).to(device)
-        fake_images = G_model(z)
-        opt_G.zero_grad()
-        g_loss=criterion(torch.squeeze(D_model(fake_images)),real_labels)
-        g_loss.backward()
-        opt_G.step()
-        
-        
+
         
         print(f"Epoch [{epoch+1}/{n_epoch}] D_loss: {d_loss.item():.4f} G_loss: {g_loss.item():.4f}")
         if (epoch + 1) % 2 == 0:
