@@ -64,7 +64,8 @@ def prepare(caption,stopword,lemmatizer):
         if c[0].isdigit():
             new_s.append("#number")
         elif c[0] not in string.punctuation:
-            if c[0] not in stopword:
+            # if c[0] not in stopword: #其实我感觉在训练w2v模型时完全没有必要去掉停用词
+            
                 wordnet_pos = get_wordnet_pos(c[1]) or wordnet.NOUN #确定词性 如果无法确认则默认为名词性质
                 new_s.append(lemmatizer.lemmatize(c[0], pos=wordnet_pos))  # 词形还原
 
